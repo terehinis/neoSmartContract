@@ -150,10 +150,6 @@ namespace NeoContractStreamity
             }
             else if (Runtime.Trigger == TriggerType.Application)
             {
-                if (operation == "getState")
-                {
-                    return Storage.Get(Context(), "state");
-                }
                 if (operation == "getBalance")
                 {
                     return BalanceStruct((byte[])args[0]);
