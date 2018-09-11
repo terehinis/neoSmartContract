@@ -14,8 +14,8 @@ namespace NeoContractStreamity
         // Constants
         private static readonly byte[] Empty = { };
         private static readonly byte Remark_1 = 0xf1;//DealHash
-        private static readonly byte Remark_2 = 0xf2;//Вывод владельцу
-        private static readonly byte Remark_3 = 0xf4;//Asset который выводит владелец
+        private static readonly byte Remark_2 = 0xf2;//For owner withdraw
+        private static readonly byte Remark_3 = 0xf3;//Asset owner withdraw
         private static readonly byte[] OpCode_TailCall = { 0x69 };
 
         // Asset Type
@@ -23,18 +23,12 @@ namespace NeoContractStreamity
         private static readonly byte[] AssetNEP5 = { 0x02 };// Asset NEP5
 
         // Deal status
-        //private static readonly byte[] STATUS_DEAL_BREAK = { 0x01 };
         private static readonly byte[] STATUS_DEAL_WAIT_CONFIRMATION = { 0x01 };
         private static readonly byte[] STATUS_DEAL_CANCEL = { 0x02 };
         private static readonly byte[] STATUS_DEAL_APPROVE = { 0x03 };
         private static readonly byte[] STATUS_DEAL_RELEASE = { 0x04 };
 
         private static readonly uint requestCancellationTime = 2 * 60 * 60; // 2 hours
-
-        // Contract States
-        private static readonly byte[] Pending = { };         // only can initialize
-        private static readonly byte[] Active = { 0x01 };     // all operations active
-        private static readonly byte[] Pause = { 0x02 };      // trading halted - only can do cancel, withdrawl & owner actions
 
         // Byte Constants 
         private static readonly byte[] NeoAssetID = { 155, 124, 255, 218, 166, 116, 190, 174, 15, 147, 14, 190, 96, 133, 175, 144, 147, 229, 254, 86, 179, 74, 92, 34, 12, 205, 207, 110, 252, 51, 111, 197 };
@@ -59,39 +53,6 @@ namespace NeoContractStreamity
         [DisplayName("dealBrokenEvent")]
         public static event Action<byte[], byte[], byte[]> DealBrokenEvent;
 
-
-
-        private struct Test
-        {
-            public byte[] test1;
-            public byte[] test2;
-            public byte[] test3;
-            public byte[] test4;
-            public byte[] test5;
-            public byte[] test6;
-            public byte[] test7;
-            public byte[] test8;
-            public byte[] test9;
-            public byte[] test10;
-        }
-
-        private static Test TestStruct()
-        {
-            return new Test
-            {
-                test1 = Storage.Get(Context(), "test1"),
-                test2 = Storage.Get(Context(), "test2"),
-                test3 = Storage.Get(Context(), "test3"),
-                test4 = Storage.Get(Context(), "test4"),
-                test5 = Storage.Get(Context(), "test5"),
-                test6 = Storage.Get(Context(), "test6"),
-                test7 = Storage.Get(Context(), "test7"),
-                test8 = Storage.Get(Context(), "test8"),
-                test9 = Storage.Get(Context(), "test9"),
-                test10 = Storage.Get(Context(), "test10")
-            };
-        }
-
         private struct Balance
         {
             public BigInteger allBalance;
@@ -101,16 +62,16 @@ namespace NeoContractStreamity
 
         private static Balance BalanceStruct(byte[] asset)
         {
+
             BigInteger allBalance = GetBalance(asset);
             BigInteger receivedBalance = GetReceivedBalance(asset);
             return new Balance
             {
-                allBalance = allBalance,
-                receivedBalance = receivedBalance,
-                difference = allBalance - receivedBalance,
+                allBalance = allBalance / 100000000,
+                receivedBalance = receivedBalance / 100000000,
+                difference = allBalance - receivedBalance / 100000000
             };
         }
-
 
         private struct Deal
         {
@@ -149,10 +110,10 @@ namespace NeoContractStreamity
                 var tx = ExecutionEngine.ScriptContainer as Transaction;
                 byte[] scriptHashContract = ExecutionEngine.ExecutingScriptHash;
                 ulong valueOut = 0;
-                var invocationTransaction = (InvocationTransaction) tx;
-                if (invocationTransaction.Script != WithdrawArgs.Concat(OpCode_TailCall).Concat(ExecutionEngine.ExecutingScriptHash)) return false;// Проверить вызов аппликейшена
+                var invocationTransaction = (InvocationTransaction)tx;
+                if (invocationTransaction.Script != WithdrawArgs.Concat(OpCode_TailCall).Concat(ExecutionEngine.ExecutingScriptHash)) return false;// Check call app
 
-                //Вывод комиссии
+                //owner withdraw
                 if (IsOwnerWithdraw(tx) == true)
                 {
                     byte[] assetID = IsOwnerWithdrawAsset(tx);
@@ -168,18 +129,20 @@ namespace NeoContractStreamity
                     else
                         return false;
                 }
+                else
+                {
+                    var hashDeal = GetHashDeal(tx);
+                    if (hashDeal == Empty) return false;
+                    Deal deal = DealStruct(hashDeal);
+                    if (deal.status == Empty) return false;
 
-                var hashDeal = GetHashDeal(tx);
-                if (hashDeal == Empty) return false;
-                Deal deal = DealStruct(hashDeal);
-                if (deal.status == Empty) return false;
+                    byte[] recipient = GetRecipient(deal);
+                    if (recipient == Empty) return false;
 
-                byte[] recipient = GetRecipient(deal);
-                if (recipient == Empty) return false;
+                    if (CheckWithdrawalOutputsDeal(tx, recipient, scriptHashContract, deal) == false) return false;
 
-                if (CheckWithdrawalOutputsDeal(tx, recipient, scriptHashContract, deal) == false) return false;
-
-                return true;
+                    return true;
+                }
             }
             else if (Runtime.Trigger == TriggerType.VerificationR)
             {
@@ -187,15 +150,6 @@ namespace NeoContractStreamity
             }
             else if (Runtime.Trigger == TriggerType.Application)
             {
-                //Start Deploy
-                if (operation == "deploy")
-                {
-                    return Deploy();
-                }
-                if (operation == "test")
-                {
-                    return TestStruct();
-                }
                 if (operation == "getState")
                 {
                     return Storage.Get(Context(), "state");
@@ -238,41 +192,38 @@ namespace NeoContractStreamity
             var tx = (Transaction)ExecutionEngine.ScriptContainer;
             byte[] scriptHashContract = ExecutionEngine.ExecutingScriptHash;
             ulong valueOut = 0;
-
             if (IsOwnerWithdraw(tx) == true)
             {
                 byte[] assetID = IsOwnerWithdrawAsset(tx);
                 if (assetID == Empty) return false;
                 valueOut = CheckWithdrawalOutputs(tx, OWNER, scriptHashContract, assetID);
-
                 BigInteger allBalance = GetBalance(assetID);
                 BigInteger receivedBalance = GetReceivedBalance(assetID);
                 BigInteger withdrawAvalible = allBalance - receivedBalance;
 
-                if (valueOut != 0 && withdrawAvalible >= valueOut) { 
-                    return true;
-                }else
-                    return false;
+                if (valueOut != 0 && withdrawAvalible >= valueOut) return true;
+                else return false;
             }
+            else
+            {
+                var hashDeal = GetHashDeal(tx);
+                if (hashDeal == Empty) return false;
+                Deal deal = DealStruct(hashDeal);
 
-            var hashDeal = GetHashDeal(tx);
-            if (hashDeal == Empty) return false;
-            Deal deal = DealStruct(hashDeal);
+                byte[] recipient = GetRecipient(deal);
+                if (recipient == Empty) return false;
 
-            byte[] recipient = GetRecipient(deal);
-            if (recipient == Empty) return false;
-            
-            if (CheckWithdrawalOutputsDeal(tx, recipient, scriptHashContract, deal) == false) return false;
+                if (CheckWithdrawalOutputsDeal(tx, recipient, scriptHashContract, deal) == false) return false;
 
-            ChangeStatus(deal, STATUS_DEAL_RELEASE);
+                ChangeStatus(deal, STATUS_DEAL_RELEASE);
 
-            UpdateReceivedBalance(deal.assetID, valueOut, false);
-            if(deal.assetID == NeoAssetID && deal.status == STATUS_DEAL_CANCEL)
-                UpdateReceivedBalance(GasAssetID, deal.commission, false);
+                UpdateReceivedBalance(deal.assetID, valueOut, false);
+                if (deal.assetID == NeoAssetID && deal.status == STATUS_DEAL_CANCEL)
+                    UpdateReceivedBalance(GasAssetID, deal.commission, false);
 
-            ReleasedEvent(hashDeal, deal.seller, deal.buyer);
-
-            return true;
+                ReleasedEvent(hashDeal, deal.seller, deal.buyer);
+                return true;
+            }
         }
 
         private static ulong CheckWithdrawalOutputs(Transaction tx, byte[] recipient, byte[] scriptHashContract, byte[] assetId)
@@ -280,9 +231,9 @@ namespace NeoContractStreamity
             ulong valueOut = 0;
             foreach (var output in tx.GetOutputs())
             {
-                if (output.ScriptHash != recipient && output.ScriptHash != scriptHashContract) return 0; //Если адрес на который отправляется крипта не покупатель и не контракт
-                if (output.ScriptHash == scriptHashContract) continue; //Если адрес контракта то пропускаем иттерацию цикла  
-                if (output.AssetId != assetId) return 0; //Если выводимый актив не тот, что указан в сделке
+                if (output.ScriptHash != recipient && output.ScriptHash != scriptHashContract) return 0;
+                if (output.ScriptHash == scriptHashContract) continue; 
+                if (output.AssetId != assetId) return 0;
 
                 valueOut = valueOut += (ulong)output.Value;
             }
@@ -295,8 +246,8 @@ namespace NeoContractStreamity
             ulong valueOut = 0;
             foreach (var output in tx.GetOutputs())
             {
-                if (output.ScriptHash != recipient && output.ScriptHash != scriptHashContract) return false; //Если адрес на который отправляется крипта не покупатель и не контракт
-                if (output.ScriptHash == scriptHashContract) continue; //Если адрес контракта то пропускаем иттерацию цикла
+                if (output.ScriptHash != recipient && output.ScriptHash != scriptHashContract) return false; //The recipient's address must be a buyer
+                if (output.ScriptHash == scriptHashContract) continue; //If the transaction has a SC
                 if (deal.assetID == NeoAssetID && deal.status == STATUS_DEAL_CANCEL)
                 {
                     if (output.AssetId != NeoAssetID && output.AssetId != GasAssetID) return false;
@@ -305,41 +256,21 @@ namespace NeoContractStreamity
                 }
                 else
                 {
-                    if (output.AssetId != deal.assetID) return false; //Если выводимый актив не тот, что указан в сделке
+                    if (output.AssetId != deal.assetID) return false; //If the transaction is in NEO and it is canceled, we return both the NEO and the commission to GAS
                     valueOut = valueOut += (ulong)output.Value;
                 }     
             }
             if (deal.assetID == NeoAssetID && deal.status == STATUS_DEAL_CANCEL)
             {
-                if (valueNEO != deal.value) return false; //Если выводимая сумма не равна сумме в сделке
-                if (valueOut != deal.commission) return false; //Если выводимая комиссия не равна сумме в сделке
+                if (valueNEO != deal.value) return false; //The amount withdrawn must be equal to the amount in the transaction
+                if (valueOut != deal.commission) return false; //The amount withdrawn commission must be equal to the amount in the transaction
             }
             else
             {
-                if (valueOut != deal.value) return false; //Если выводимая сумма не равна сумме в сделке
+                if (valueOut != deal.value) return false; //The amount withdrawn must be equal to the amount in the transaction
             }
 
             return true;
-        }
-
-        private static bool Deploy()
-        {
-            if (!IsOwner() || GetState() != Pending)
-            {
-                return false;
-            }
-            Storage.Put(Context(), "state", Active);
-            return true;
-        }
-
-        private static bool AddAsset(byte[] assetID)
-        {
-            if(Storage.Get(Context(), assetID.Concat("balance".AsByteArray())) == Empty)
-            {
-                Storage.Put(Context(), assetID.Concat("balance".AsByteArray()), 0);
-                return true;
-            }
-            return false;
         }
 
         private static object GetHashDeal(byte[] dealId, byte[] seller, byte[] buyer, byte[] assetID, BigInteger value, BigInteger commission)
@@ -355,14 +286,11 @@ namespace NeoContractStreamity
             BigInteger receivedGAS = 0;
             BigInteger receivedNEP5 = 0;
             
-            byte[] hashDeal = Hash256(dealId.Concat(seller).Concat(buyer).Concat(value.AsByteArray()).Concat(commission.ToByteArray()));
-
-            Storage.Put(Context(), "test1", "1");
+            byte[] hashDeal = Hash256(dealId.Concat(seller).Concat(buyer).Concat(value.AsByteArray()).Concat(commission.ToByteArray())); 
 
             Deal deal = DealStruct(hashDeal);
             if (deal.status != Empty)
             {
-                Storage.Put(Context(), "test2", hashDeal);
                 DealRepeatedEvent(hashDeal, seller, buyer);
                 return false;
             }
@@ -389,14 +317,9 @@ namespace NeoContractStreamity
             bool checkValues = true;
             BigInteger receivedTokens = 0;
 
-            Storage.Put(Context(), "test", "2");
-            //if (assetID == GasAssetID && value != receivedGAS) checkValues = false; //Если сделка в GAS, то проверить, что GAS перечисленно в соответствии с value
-            //else if (assetID == NeoAssetID && (value != receivedNEO || commission != receivedGAS)) checkValues = false;//Если в NEO, то value должно быть = NEO, комиссия = GAS
-            //else if (assetID != GasAssetID && assetID != NeoAssetID) checkValues = false; //Если не NEO и не GAS
-
             if (assetID == NeoAssetID)
             {
-                if (value != receivedNEO || commission != receivedGAS) checkValues = false; //Если в NEO, то value должно быть = NEO, комиссия = GAS
+                if (value != receivedNEO || commission != receivedGAS) checkValues = false; //If the transaction is in NEO, then value should be = NEO, commission = GAS
                 else receivedTokens = receivedNEO;
             }
             else if (assetID == GasAssetID)
@@ -412,15 +335,13 @@ namespace NeoContractStreamity
 
             if (checkValues == false)
             {
-                Storage.Put(Context(), "test", "3");
-                DealBrokenEvent(hashDeal, seller, buyer);
+                DealBrokenEvent(hashDeal, seller, buyer);//If the transaction has inconsistencies, end processing and create an Event
                 return false;
             }
-            Storage.Put(Context(), "test", "4");
-            UpdateReceivedBalance(assetID, receivedTokens, true);
+
+            UpdateReceivedBalance(assetID, receivedTokens, true);//Increase the reserved balance, without the possibility of withdrawal by the owner
             StartDealForUser(hashDeal, dealId, seller, buyer, assetID, value, commission);
-            Storage.Put(Context(), "test3", "1");
-            return hashDeal;
+            return true;
         }
 
         private static bool SetApprove(byte[] hashDeal)
@@ -468,7 +389,6 @@ namespace NeoContractStreamity
             SetDeal(hashDeal, "value", value.AsByteArray());
             SetDeal(hashDeal, "commission", commission.AsByteArray());
             SetDeal(hashDeal, "cancelTime", Blockchain.GetHeader(Blockchain.GetHeight()).Timestamp + requestCancellationTime);
-            Storage.Put(Context(), "test5", "1");
             StartedDealEvent(hashDeal, seller, buyer);
         }
 
@@ -476,7 +396,6 @@ namespace NeoContractStreamity
         {
             byte[] assetType = AssetSystem;
             if (assetID.Length == 20) assetType = AssetNEP5;
-            Storage.Put(Context(), "test4", assetType);
             SetDeal(hashDeal, "sellerBuyerAssetStatus", seller.Concat(buyer).Concat(assetType).Concat(assetID).Concat(status));
         }
 
@@ -490,7 +409,6 @@ namespace NeoContractStreamity
             Storage.Put(Context(), hashDeal.Concat(key.AsByteArray()), (byte[])value);
         }
 
-        //Взять хэш сделки из атрибута remark 1
         private static byte[] GetHashDeal(Transaction transaction)
         {
             var txnAttributes = transaction.GetAttributes();
@@ -501,7 +419,6 @@ namespace NeoContractStreamity
             return Empty;
         }
 
-        //Проверка, если Remark_2 = OWNER, значит инициирован вывод комиссии владельцу
         private static bool IsOwnerWithdraw(Transaction transaction)
         {
             var txnAttributes = transaction.GetAttributes();
@@ -509,11 +426,9 @@ namespace NeoContractStreamity
             {
                 if (attr.Usage == Remark_2 && attr.Data == OWNER) return true;
             }
-
             return false;
         }
 
-        //Asset который выводит владелец Remark_3
         private static byte[] IsOwnerWithdrawAsset(Transaction transaction)
         {
             var txnAttributes = transaction.GetAttributes();
@@ -538,7 +453,7 @@ namespace NeoContractStreamity
             return Empty;
         }
 
-        // Возвращает баланс СК по определенному AssetID
+        // Returns the balance for a specific AssetID
         private static BigInteger GetBalance(byte[] assetID)
         {
             Account account = Blockchain.GetAccount(ExecutionEngine.ExecutingScriptHash);
